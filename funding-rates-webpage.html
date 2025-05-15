@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Funding Rates Analyzer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+            line-height: 1.6;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .stats-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .stats-box {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        #loading {
+            text-align: center;
+            margin: 20px 0;
+            font-style: italic;
+            color: #7f8c8d;
+            display: none;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+            position: sticky;
+            top: 0;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .positive {
+            color: #27ae60;
+        }
+        .negative {
+            color: #e74c3c;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Binance Funding Rates Analyzer</h1>
+        <p>Analyze funding rates for USDT-margined futures on Binance</p>
+    </header>
+
+    <div class="container">
+        <button id="fetchButton">Fetch Funding Rates</button>
+        <div id="loading">Fetching data... This might take a minute.</div>
+
+        <div class="stats-container" id="statsContainer" style="display: none;">
+            <div class="stats-box">
+                <h2>Average Funding Rates</h2>
+                <div id="averageFunding"></div>
+            </div>
+            <div class="stats-box">
+                <h2>Positive/Negative Distribution</h2>
+                <div id="distribution"></div>
+            </div>
+        </div>
+
+        <div id="resultsSection" style="display: none;">
+            <h2>Funding Rates by Symbol</h2>
+            <p>Click on column headers to sort.</p>
+            <div style="overflow-x: auto;">
+                <table id="resultsTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Current</th>
+                            <th>1 Day</th>
+                            <th>3 Days</th>
+                            <th>7 Days</th>
+                            <th>30 Days</th>
+                            <th>90 Days</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables to store data
+        let allFundingData = [];
+        let processedResults = {};
+        
+        document.getElementById('fetchButton').addEventListener('click', async () => {
+            const button = document.getElementById('fetchButton');
+            const loading = document.getElementById('loading');
+            
+            button.disabled = true;
+            loading.style.display = 'block';
+            
+            try {
+                await fetchAndProcessData();
+                displayResults();
+                document.getElementById('statsContainer').style.display = 'grid';
+                document.getElementById('resultsSection').style.display = 'block';
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to fetch data. Please try again later.');
+            } finally {
+                button.disabled = false;
+                loading.style.display = 'none';
+            }
+        });
+
+        async function getBinanceFuturesTickers() {
+            const url = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
+            const response = await fetch(url);
+            const data = await response.json();
+            return data
+                .filter(ticker => ticker.symbol.includes('USDT'))
+                .map(ticker => ticker.symbol);
+        }
+
+        async function getFundingData(symbol, period = '1h', limit = 300) {
+            const url = new URL('https://fapi.binance.com/fapi/v1/fundingRate');
+            url.search = new URLSearchParams({
+                symbol: symbol,
+                period: period,
+                limit: limit
+            });
+            
+            const response = await fetch(url);
+            return await response.json();
+        }
+
+        async function fetchAndProcessData() {
+            console.log("Fetching available futures pairs...");
+            const tickers = await getBinanceFuturesTickers();
+            
+            console.log(`Fetching funding data for ${tickers.length} pairs...`);
+            
+            // Fetch funding data for all tickers
+            allFundingData = [];
+            const batchSize = 10; // Process in batches to avoid overwhelming the browser
+            
+            for (let i = 0; i < tickers.length; i += batchSize) {
+                const batch = tickers.slice(i, i + batchSize);
+                const batchPromises = batch.map(symbol => getFundingData(symbol));
+                const batchResponses = await Promise.all(batchPromises);
+                
+                batchResponses.forEach(symbolData => {
+                    allFundingData = allFundingData.concat(symbolData);
+                });
+                
+                // Update loading message to show progress
+                document.getElementById('loading').textContent = 
+                    `Fetching data... ${Math.min(i + batchSize, tickers.length)} of ${tickers.length} pairs processed.`;
+                
+                // Small delay to allow UI to update
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            // Process the collected data
+            processData();
+        }
+
+        function processData() {
+            // Group data by symbol
+            const symbolGroups = {};
+            allFundingData.forEach(item => {
+                const symbol = item.symbol;
+                if (!symbolGroups[symbol]) {
+                    symbolGroups[symbol] = [];
+                }
+                symbolGroups[symbol].push({
+                    fundingTime: new Date(parseInt(item.fundingTime)),
+                    fundingRate: parseFloat(item.fundingRate)
+                });
+            });
+
+            // Sort each symbol's data by time (oldest first)
+            Object.keys(symbolGroups).forEach(symbol => {
+                symbolGroups[symbol].sort((a, b) => a.fundingTime - b.fundingTime);
+            });
+
+            // Calculate average funding rates for different periods
+            const results = {};
+            const periods = {
+                '90 days': symbolData => calculateMean(symbolData),
+                '30 days': symbolData => calculateMean(symbolData.slice(-90)),
+                '7 days': symbolData => calculateMean(symbolData.slice(-22)),
+                '3 days': symbolData => calculateMean(symbolData.slice(-10)),
+                '1 day': symbolData => calculateMean(symbolData.slice(-3)),
+                'current': symbolData => symbolData.length > 0 ? symbolData[symbolData.length - 1].fundingRate : 0
+            };
+
+            Object.keys(symbolGroups).forEach(symbol => {
+                results[symbol] = {};
+                const data = symbolGroups[symbol];
+                
+                Object.keys(periods).forEach(period => {
+                    // Multiply by 365*3*100 to get annual percentage (3 funding events per day)
+                    results[symbol][period] = periods[period](data) * 365 * 3 * 100;
+                });
+            });
+
+            processedResults = results;
+        }
+
+        function calculateMean(data) {
+            if (data.length === 0) return 0;
+            const sum = data.reduce((acc, item) => acc + item.fundingRate, 0);
+            return sum / data.length;
+        }
+
+        function displayResults() {
+            const results = processedResults;
+            const symbols = Object.keys(results);
+            
+            // Calculate overall statistics
+            const periods = ['current', '1 day', '3 days', '7 days', '30 days', '90 days'];
+            
+            // Calculate means
+            const means = {};
+            periods.forEach(period => {
+                const values = symbols.map(symbol => results[symbol][period]);
+                means[period] = calculateArrayMean(values);
+            });
+            
+            // Calculate positive/negative percentages
+            const positivePercent = {};
+            const negativePercent = {};
+            
+            periods.forEach(period => {
+                const values = symbols.map(symbol => results[symbol][period]);
+                const positiveCount = values.filter(value => value > 0).length;
+                const negativeCount = values.filter(value => value < 0).length;
+                
+                positivePercent[period] = (positiveCount / values.length) * 100;
+                negativePercent[period] = (negativeCount / values.length) * 100;
+            });
+            
+            // Display average funding rates
+            let avgHtml = '<ul>';
+            periods.forEach(period => {
+                avgHtml += `<li><strong>${period}:</strong> ${means[period].toFixed(2)}%</li>`;
+            });
+            avgHtml += '</ul>';
+            
+            document.getElementById('averageFunding').innerHTML = avgHtml;
+            
+            // Display distribution
+            let distHtml = '<ul>';
+            periods.forEach(period => {
+                distHtml += `<li><strong>${period}:</strong> ${positivePercent[period].toFixed(2)}% positive, 
+                            ${negativePercent[period].toFixed(2)}% negative</li>`;
+            });
+            distHtml += '</ul>';
+            
+            document.getElementById('distribution').innerHTML = distHtml;
+            
+            // Display results table
+            const tableBody = document.getElementById('resultsBody');
+            tableBody.innerHTML = '';
+            
+            symbols.forEach(symbol => {
+                const row = document.createElement('tr');
+                
+                // Symbol column
+                const symbolCell = document.createElement('td');
+                symbolCell.textContent = symbol;
+                row.appendChild(symbolCell);
+                
+                // Period columns
+                periods.forEach(period => {
+                    const value = results[symbol][period];
+                    const cell = document.createElement('td');
+                    cell.textContent = value.toFixed(2) + '%';
+                    cell.className = value > 0 ? 'positive' : value < 0 ? 'negative' : '';
+                    row.appendChild(cell);
+                });
+                
+                tableBody.appendChild(row);
+            });
+            
+            // Add sorting functionality to table headers
+            const tableHeaders = document.querySelectorAll('#resultsTable th');
+            tableHeaders.forEach((header, index) => {
+                header.addEventListener('click', () => {
+                    sortTable(index);
+                });
+                header.style.cursor = 'pointer';
+            });
+        }
+        
+        function calculateArrayMean(arr) {
+            if (arr.length === 0) return 0;
+            const sum = arr.reduce((acc, val) => acc + val, 0);
+            return sum / arr.length;
+        }
+        
+        function sortTable(columnIndex) {
+            const table = document.getElementById('resultsTable');
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            const direction = table.getAttribute('data-sort-dir') === 'asc' ? -1 : 1;
+            
+            if (table.getAttribute('data-sort-col') === columnIndex.toString()) {
+                table.setAttribute('data-sort-dir', direction === 1 ? 'asc' : 'desc');
+            } else {
+                table.setAttribute('data-sort-col', columnIndex);
+                table.setAttribute('data-sort-dir', 'asc');
+            }
+            
+            rows.sort((a, b) => {
+                let aValue, bValue;
+                
+                if (columnIndex === 0) {
+                    // Symbol column (text sorting)
+                    aValue = a.cells[columnIndex].textContent;
+                    bValue = b.cells[columnIndex].textContent;
+                    return direction * aValue.localeCompare(bValue);
+                } else {
+                    // Numeric columns
+                    aValue = parseFloat(a.cells[columnIndex].textContent);
+                    bValue = parseFloat(b.cells[columnIndex].textContent);
+                    return direction * (aValue - bValue);
+                }
+            });
+            
+            // Remove all rows and re-append in sorted order
+            rows.forEach(row => tbody.appendChild(row));
+        }
+    </script>
+</body>
+</html>
